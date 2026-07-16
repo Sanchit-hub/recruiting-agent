@@ -111,11 +111,22 @@ def apply_experience_check(candidate: Candidate, scorecard: Scorecard) -> int:
     if min_years is None and max_years is None:
         return 0
 
-    lo = min_years if min_years is not None else max_years
-    hi = max_years if max_years is not None else min_years
-    if lo <= years <= hi:
-        return 20
-    edge_distance = min(abs(years - lo), abs(years - hi))
+    if min_years is not None and max_years is not None:
+        if min_years <= years <= max_years:
+            return 20
+        edge_distance = min(abs(years - min_years), abs(years - max_years))
+    elif min_years is not None:
+        # Open-ended "N+ years" requirement: anything at or above the
+        # minimum is a full match, not just years close to it.
+        if years >= min_years:
+            return 20
+        edge_distance = min_years - years
+    else:
+        # Open-ended "up to N years" requirement.
+        if years <= max_years:
+            return 20
+        edge_distance = years - max_years
+
     return 12 if edge_distance <= 1 else 5
 
 

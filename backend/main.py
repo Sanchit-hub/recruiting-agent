@@ -33,6 +33,7 @@ from models.jd_run import JDRun, JDRunCreate  # noqa: E402
 from pipeline import deep_research, discovery, filter_tier, jd_parser, output_writer  # noqa: E402
 
 MIN_JD_LENGTH = 50
+MAX_DISCOVERY_ATTEMPTS = 4
 
 
 @asynccontextmanager
@@ -73,24 +74,60 @@ def run_pipeline(jd_run_id: str, jd_text: str) -> None:
         scorecard = jd_parser.parse_jd(jd_text)
         _update_run(jd_run_id, scorecard=scorecard.model_dump(), status_detail="discovering")
 
-        def _on_discovery_progress(count: int) -> None:
-            _update_run(jd_run_id, total_discovered=count)
+        candidates: list[Candidate] = []
+        survivors: list[Candidate] = []
+        insufficient: list[Candidate] = []
+        seen_urls: set[str] = set()
+        found_top = False
 
-        candidates = discovery.discover_candidates(
-            scorecard, jd_run_id, on_progress=_on_discovery_progress
-        )
+        for attempt in range(1, MAX_DISCOVERY_ATTEMPTS + 1):
+            _update_run(jd_run_id, status_detail="discovering", search_attempt=attempt)
+
+            def _on_discovery_progress(count: int, _base: int = len(candidates)) -> None:
+                _update_run(jd_run_id, total_discovered=_base + count)
+
+            new_candidates = discovery.discover_candidates(
+                scorecard, jd_run_id, on_progress=_on_discovery_progress, attempt=attempt
+            )
+            for candidate in new_candidates:
+                if candidate.profile_url not in seen_urls:
+                    seen_urls.add(candidate.profile_url)
+                    candidates.append(candidate)
+
+            if not candidates:
+                logger.info(
+                    "Attempt %d/%d found no candidates for jd_run_id=%s.",
+                    attempt, MAX_DISCOVERY_ATTEMPTS, jd_run_id,
+                )
+                continue
+
+            _update_run(jd_run_id, total_discovered=len(candidates), status_detail="filtering")
+            survivors, insufficient = filter_tier.filter_and_tier(candidates, scorecard)
+
+            found_top = any(c.tier == "top" for c in survivors)
+            if found_top:
+                logger.info("Attempt %d found a top-tier candidate for jd_run_id=%s.", attempt, jd_run_id)
+                break
+            logger.info(
+                "Attempt %d/%d found %d candidates but no top-tier match for jd_run_id=%s; broadening search.",
+                attempt, MAX_DISCOVERY_ATTEMPTS, len(candidates), jd_run_id,
+            )
 
         if not candidates:
             _update_run(
                 jd_run_id,
                 status="failed",
                 status_detail="failed",
-                error="No candidates found. Try broadening the JD.",
+                error="No candidates found after repeated searches. Try broadening the JD.",
             )
             return
 
-        _update_run(jd_run_id, total_discovered=len(candidates), status_detail="filtering")
-        survivors, insufficient = filter_tier.filter_and_tier(candidates, scorecard)
+        if not found_top:
+            logger.warning(
+                "Reached max discovery attempts (%d) without a top-tier candidate for jd_run_id=%s; "
+                "proceeding with the best candidates found.",
+                MAX_DISCOVERY_ATTEMPTS, jd_run_id,
+            )
 
         _update_run(jd_run_id, status_detail="researching")
         deep_research.run_deep_research(survivors, scorecard)

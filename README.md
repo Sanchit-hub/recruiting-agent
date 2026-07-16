@@ -7,25 +7,31 @@ MongoDB for future runs.
 
 ## Architecture
 
-- **Backend:** FastAPI + a pipeline of Gemini (JD parsing, semantic scoring,
+- **Backend:** FastAPI + a pipeline of Groq (JD parsing, semantic scoring,
   and deep research on the top tier) → Exa (candidate discovery).
 - **Frontend:** React (Vite) + Tailwind CSS.
 - **Database:** MongoDB.
 
 See `recruiting_agent_PRD.md` for the full design spec.
 
-### Deviations from the PRD (both required — see below)
+### Deviations from the PRD (all required — see below)
 
 - **Gemini model:** the PRD specifies `gemini-2.5-flash`. That model returns
   `404 "no longer available to new users"` on newly created Google API keys,
-  so this build uses `gemini-3.5-flash` instead (`DEFAULT_GEMINI_MODEL` in
-  `backend/pipeline/llm_utils.py`) — confirmed working live.
+  so this build first moved to `gemini-3.5-flash`, confirmed working live.
+- **Groq instead of Gemini:** the Gemini free-tier quota was exhausted
+  mid-project (2026-07-13), so every LLM call (JD parsing, semantic scoring,
+  deep research) now goes through Groq's `llama-3.3-70b-versatile`
+  (`DEFAULT_GROQ_MODEL` in `backend/pipeline/llm_utils.py`) instead of
+  Gemini. `GROQ_API_KEY` is the only LLM credential this build actually
+  needs — `GOOGLE_API_KEY` is unused dead weight left in `.env.example` for
+  parity with the PRD.
 - **Deep research model:** the PRD specifies OpenAI GPT-5.4-mini. At the
-  user's request (to avoid a dependency on OpenAI billing/quota), Step 5 uses
-  Gemini instead — same model/provider as the rest of the pipeline. See
-  `backend/pipeline/deep_research.py`. The OpenAI SDK stays in
-  `requirements.txt` only as a transitive dependency of `exa-py`; nothing in
-  this codebase calls OpenAI directly anymore.
+  user's request (to avoid a dependency on OpenAI billing/quota), Step 5 used
+  Gemini instead of OpenAI, then moved to Groq along with the rest of the
+  pipeline above. See `backend/pipeline/deep_research.py`. The OpenAI SDK
+  stays in `requirements.txt` only as a transitive dependency of `exa-py`;
+  nothing in this codebase calls OpenAI directly.
 
 ## Prerequisites
 
@@ -33,8 +39,8 @@ See `recruiting_agent_PRD.md` for the full design spec.
 - Node.js 18+
 - MongoDB running locally on `27017`, or a `MONGODB_URI` pointing at a hosted
   instance (e.g. MongoDB Atlas)
-- API keys: Google (Gemini), Exa. (An `OPENAI_API_KEY` slot remains in
-  `.env.example` for parity with the PRD, but it is unused by this build.)
+- API keys: Groq, Exa. (`GOOGLE_API_KEY` and `OPENAI_API_KEY` slots remain in
+  `.env.example` for parity with the PRD, but neither is used by this build.)
 
 ## Setup & Run
 
@@ -45,7 +51,7 @@ cd backend
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env   # fill in GOOGLE_API_KEY, OPENAI_API_KEY, EXA_API_KEY, MONGODB_URI
+cp .env.example .env   # fill in GROQ_API_KEY, EXA_API_KEY, MONGODB_URI
 uvicorn main:app --reload --port 8000
 ```
 
