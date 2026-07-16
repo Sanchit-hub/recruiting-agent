@@ -22,6 +22,7 @@ from models.jd_run import Scorecard
 logger = logging.getLogger(__name__)
 
 RESULTS_PER_PATH = 15
+MAX_RESULTS_PER_PATH = 45
 DEEP_SEARCH_THRESHOLD = 5
 
 # Simple, non-exhaustive heuristic for location extraction from free text.
@@ -111,10 +112,10 @@ def _build_query(path: str, location: str | None) -> str:
     return f"{path}, based in {location.strip()}"
 
 
-def _search(client: Exa, query: str, *, deep: bool = False) -> list[Any]:
+def _search(client: Exa, query: str, *, num_results: int, deep: bool = False) -> list[Any]:
     kwargs: dict[str, Any] = dict(
         category="people",
-        num_results=RESULTS_PER_PATH,
+        num_results=num_results,
         use_autoprompt=True,
         text=True,
     )
@@ -124,16 +125,18 @@ def _search(client: Exa, query: str, *, deep: bool = False) -> list[Any]:
     return getattr(response, "results", []) or []
 
 
-def _search_path(client: Exa, path: str, location: str | None = None) -> list[Any]:
+def _search_path(
+    client: Exa, path: str, location: str | None, *, num_results: int, force_deep: bool
+) -> list[Any]:
     query = _build_query(path, location)
     logger.info("Exa query: %r", query)
-    results = _search(client, query)
-    if len(results) < DEEP_SEARCH_THRESHOLD:
+    results = _search(client, query, num_results=num_results, deep=force_deep)
+    if not force_deep and len(results) < DEEP_SEARCH_THRESHOLD:
         logger.warning(
             "Path returned %d results (< %d), retrying with deep search: %s",
             len(results), DEEP_SEARCH_THRESHOLD, query,
         )
-        deep_results = _search(client, query, deep=True)
+        deep_results = _search(client, query, num_results=num_results, deep=True)
         if deep_results:
             results = deep_results
     return results
@@ -143,11 +146,19 @@ def discover_candidates(
     scorecard: Scorecard,
     jd_run_id: str,
     on_progress: Callable[[int], None] | None = None,
+    attempt: int = 1,
 ) -> list[Candidate]:
     """Run discovery across all candidate paths and return deduplicated candidates.
 
     If provided, on_progress is called with the cumulative raw result count
     after each path completes, so callers can surface live progress in the UI.
+
+    `attempt` broadens the search on retries (the caller re-invokes this when
+    an earlier attempt found no top-tier candidate): later attempts request
+    more results per path, force Exa's deep search instead of only falling
+    back to it on a low result count, and — from the third attempt on — drop
+    the location filter entirely, since an overly narrow geography filter is
+    a common reason a real match gets missed.
     """
     client = _get_client()
     if scorecard.work_mode == "remote":
@@ -156,11 +167,19 @@ def discover_candidates(
         location = scorecard.remote_geo_constraint
     else:
         location = scorecard.location
+    if attempt > 2:
+        location = None
+
+    num_results = min(RESULTS_PER_PATH * attempt, MAX_RESULTS_PER_PATH)
+    force_deep = attempt > 1
+
     all_results: list[tuple[Any, str]] = []
 
     for path in scorecard.candidate_paths:
         try:
-            results = _search_path(client, path, location=location)
+            results = _search_path(
+                client, path, location, num_results=num_results, force_deep=force_deep
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning("Exa search failed for path %r: %s", path, exc)
             continue
@@ -170,7 +189,9 @@ def discover_candidates(
             on_progress(len(all_results))
 
     if not all_results:
-        logger.warning("All candidate paths returned 0 results for jd_run_id=%s", jd_run_id)
+        logger.warning(
+            "All candidate paths returned 0 results for jd_run_id=%s (attempt %d)", jd_run_id, attempt
+        )
         return []
 
     seen_urls: set[str] = set()

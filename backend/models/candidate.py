@@ -19,6 +19,7 @@ class FitBreakdown(BaseModel):
     role_family_score: int = 0
     domain_score: int = 0
     education_score: int = 0
+    research_adjustment: int = 0
 
 
 class SemanticCheckResult(BaseModel):

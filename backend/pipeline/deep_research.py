@@ -128,6 +128,7 @@ def _research_one(candidate: Candidate, scorecard_summary: str, pattern_context:
 
     candidate.research_briefing = briefing
     adjustment = max(-10, min(10, briefing.fit_score_adjustment))
+    candidate.fit_breakdown.research_adjustment = adjustment
     candidate.fit_score = max(0, min(100, candidate.fit_score + adjustment))
     candidate.tier = tier_for_score(candidate.fit_score)
 
